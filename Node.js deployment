@@ -1,0 +1,74 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_REGISTRY = 'docker.io'
+        DOCKER_IMAGE = 'your-username/your-app'
+        DOCKER_CREDENTIALS = credentials('docker-credentials')
+        KUBE_CONFIG = credentials('kubeconfig')
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                nodejs(nodeJSInstallationName: 'Node 18') {
+                    sh 'npm ci'
+                }
+            }
+        }
+        
+        stage('Test') {
+            steps {
+                nodejs(nodeJSInstallationName: 'Node 18') {
+                    sh 'npm test'
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            when { branch 'main' }
+            steps {
+                script {
+                    def imageTag = "${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                    docker.withRegistry("https://${DOCKER_REGISTRY}", 'docker-credentials') {
+                        def app = docker.build(imageTag)
+                        app.push()
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to Kubernetes') {
+            when { branch 'main' }
+            steps {
+                withKubeConfig([credentialsId: 'kubeconfig']) {
+                    sh """
+                        sed -i 's|IMAGE_TAG|${BUILD_NUMBER}|g' k8s/deployment.yaml
+                        kubectl apply -f k8s/deployment.yaml
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            slackSend(
+                color: 'good',
+                message: "Deployment successful: ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+            )
+        }
+        failure {
+            slackSend(
+                color: 'danger',
+                message: "Deployment failed: ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+            )
+        }
+    }
+}
